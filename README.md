@@ -138,3 +138,8 @@ Sem token configurado, a API recusa todas as chamadas.
 - **Outras telas.** Smartwatch, Smart TV, carro e o painel do médico do protótipo podem consumir a API REST.
 
 > O MedRemind organiza lembretes e registros. Ele não substitui orientação médica.
+
+## Licença
+
+Código sob a licença [MIT](LICENSE). A fonte Plus Jakarta Sans é distribuída sob a SIL Open Font License
+(`assets/fonts/LICENSE_FONT`).
