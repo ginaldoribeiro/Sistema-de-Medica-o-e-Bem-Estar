@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Builds do Flet / Flutter
+build/
+dist/
+
+# Dados locais (nunca versionar dados de saúde)
+*.db
+*.db-wal
+*.db-shm
+backups/
+relatorios/
+medremind-backup-*.json
+
+# Segredos e sistema
+.env
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

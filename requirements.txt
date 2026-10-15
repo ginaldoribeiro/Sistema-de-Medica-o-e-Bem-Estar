@@ -1,0 +1,6 @@
+flet==1.0.4
+httpx>=0.27          # assistente com IA (API da Anthropic), opcional
+fastapi>=0.115       # API REST, opcional
+uvicorn>=0.30        # servidor da API, opcional
+plyer>=2.1           # notificações nativas no desktop, opcional
+pytest>=8            # testes
