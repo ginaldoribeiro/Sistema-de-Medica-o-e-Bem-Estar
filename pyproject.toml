@@ -9,11 +9,18 @@ description = "MedRemind — gestor de medicações com lembretes, estoque, hidr
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["flet==1.0.4", "httpx>=0.27", "tzdata"]
+dependencies = [
+    "flet==1.0.4",
+    "httpx>=0.27",
+    "tzdata",
+    # Recursos nativos (só têm efeito no app compilado com `flet build`):
+    "flet-local-auth==1.0.4",                       # biometria (digital/rosto)
+    "medremind-notifications @ file:///${PROJECT_ROOT}/extensions/medremind_notifications",  # lembretes com app fechado
+]
 
 [project.optional-dependencies]
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sqlalchemy>=2.0", "alembic>=1.13",
-          "psycopg[binary]>=3.2", "pyjwt>=2.8", "email-validator>=2.1"]
+          "psycopg[binary]>=3.2", "pyjwt>=2.8", "email-validator>=2.1", "redis>=5"]
 desktop = ["plyer>=2.1"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
@@ -26,6 +33,17 @@ org = "br.com.medremind"
 product = "MedRemind"
 company = "MedRemind"
 copyright = "Copyright (C) 2026 MedRemind"
+
+# Permissões e textos exigidos pelas lojas para os recursos nativos
+[tool.flet.android.permission]
+"android.permission.POST_NOTIFICATIONS" = true      # Android 13+: mostrar lembretes
+"android.permission.SCHEDULE_EXACT_ALARM" = true    # lembrete no minuto certo
+"android.permission.RECEIVE_BOOT_COMPLETED" = true  # reagendar depois de reiniciar o celular
+"android.permission.USE_BIOMETRIC" = true
+"android.permission.VIBRATE" = true
+
+[tool.flet.ios.info]
+NSFaceIDUsageDescription = "Use o Face ID para desbloquear o MedRemind e proteger seus dados de saúde."
 
 [tool.flet.app]
 path = "."

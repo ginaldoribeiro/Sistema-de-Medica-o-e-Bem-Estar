@@ -146,6 +146,8 @@ def _account_section(app) -> list[ft.Control]:
                 pwd.update()
                 return
             app.close_dialog()
+            if app.native:
+                app.page.run_task(app.native.cancel_all)
             app.device.settings.delete("mode")
             app.toast("Conta e dados excluídos do servidor.")
             app.go("account", reset=True, first_run=True)
@@ -158,6 +160,8 @@ def _account_section(app) -> list[ft.Control]:
 
     def logout(e):
         def run():
+            if app.native:
+                app.page.run_task(app.native.cancel_all)  # lembretes do sistema saem junto com a conta
             s.logout()
             app.device.settings.delete("mode")
             app.go("account", reset=True, first_run=True)
@@ -232,6 +236,7 @@ def profile_view(app):
     def set_pref(key):
         def handler(e):
             c.reminders.save_prefs(**{key: e.control.value})
+            app.refresh()  # reagenda os lembretes do sistema com a nova preferência
         return handler
 
     def security_row():
@@ -251,8 +256,24 @@ def profile_view(app):
                 app.dialog("Remover PIN", ft.Column([pin], tight=True, width=300),
                            [ft.TextButton(content=T("Cancelar", 14, 700, th.INK_2), on_click=app.close_dialog),
                             ft.TextButton(content=T("Remover", 14, 800, th.DANGER), on_click=ok)])
-            return list_row(icon_badge(ft.Icons.LOCK, size=40, radius=12), "PIN de acesso", "Ativo — pedido ao abrir o app",
-                            link_button("Remover", remove, th.DANGER))
+            pin_row = list_row(icon_badge(ft.Icons.LOCK, size=40, radius=12), "PIN de acesso",
+                               "Ativo — pedido ao abrir o app", link_button("Remover", remove, th.DANGER))
+            if app.native is None or app.native._auth is None:
+                return pin_row
+
+            def toggle_bio(e):
+                async def run():
+                    if e.control.value and not await app.native.authenticate("Confirmar para ativar a biometria"):
+                        e.control.value = False
+                        e.control.update()
+                        app.toast("Biometria indisponível ou não confirmada neste aparelho.")
+                        return
+                    app.device.settings.set("biometric_unlock", bool(e.control.value))
+                app.page.run_task(run)
+
+            bio = switch_row(ft.Icons.FINGERPRINT, "Desbloquear com biometria", "Digital ou rosto; o PIN fica de reserva",
+                             bool(app.device.settings.get("biometric_unlock")), toggle_bio, last=True)
+            return ft.Column([pin_row, bio], spacing=0)
         return list_row(icon_badge(ft.Icons.LOCK_OPEN, th.WARN_TINT, th.WARN_INK, size=40, radius=12), "PIN de acesso",
                         "Desativado", link_button("Ativar", lambda e: app.go("pin_setup")))
 
@@ -268,7 +289,11 @@ def profile_view(app):
                  on_click=lambda e: app.go("audit")),
         security_row(),
     ]
-    tools[-1].border = None
+    if app.multiuser:
+        # Web hospedado: nada de arquivos ou PIN no servidor web — relatório e backup vêm da conta.
+        tools = [tools[2]]
+    if isinstance(tools[-1], ft.Container):
+        tools[-1].border = None
 
     children = [
         header_card,
@@ -292,7 +317,10 @@ def profile_view(app):
             switch_row(ft.Icons.VIBRATION, "Vibração", "Vibrar junto com o alerta", prefs["vibration"],
                        set_pref("vibration")),
             switch_row(ft.Icons.WARNING_AMBER, "Alerta persistente", f"Repete a cada {prefs['repeat_minutes']} min até confirmar",
-                       prefs["persistent"], set_pref("persistent"), last=True),
+                       prefs["persistent"], set_pref("persistent")),
+            switch_row(ft.Icons.VISIBILITY_OFF, "Ocultar nome do remédio",
+                       "Na tela bloqueada aparece só \"hora de tomar seu remédio\"", bool(prefs.get("hide_names")),
+                       set_pref("hide_names"), last=True),
         ]),
         section("Segurança e dados", caps=True),
         grouped(tools),

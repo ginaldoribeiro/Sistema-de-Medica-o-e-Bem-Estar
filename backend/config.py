@@ -26,6 +26,7 @@ class Settings:
     fcm_server_key: str = field(default_factory=lambda: os.environ.get("FCM_SERVER_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     max_sync_items: int = 2000
+    redis_url: str = field(default_factory=lambda: os.environ.get("REDIS_URL", ""))
 
     def __post_init__(self) -> None:
         if not self.jwt_secret:

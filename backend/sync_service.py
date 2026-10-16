@@ -64,10 +64,12 @@ def _assign(kind: str, row, item: dict) -> None:
             bool(item.get("paused"))
         row.stock_units, row.stock_total = float(item.get("stock_units", 0)), float(item.get("stock_total", 0))
         row.refill_alert_days = int(item.get("refill_alert_days", 7))
+        row.stock_set_at = item.get("stock_set_at")
     elif kind == "dose_logs":
         row.scheduled_at = _dt(item["scheduled_at"])
         row.status, row.note = item["status"], item.get("note") or ""
         row.acted_at, row.snoozed_until = _dt(item.get("acted_at")), _dt(item.get("snoozed_until"))
+        row.taken_utc = item.get("taken_utc")
     elif kind == "water_logs":
         row.amount_ml, row.kind, row.logged_at = int(item["amount_ml"]), item.get("kind", "copo"), _dt(item["logged_at"])
     elif kind == "contacts":
@@ -84,11 +86,13 @@ def to_wire(kind: str, row, med_uuid: dict[int, str]) -> dict:
                     start_date=row.start_date.isoformat() if row.start_date else None,
                     end_date=row.end_date.isoformat() if row.end_date else None, track_stock=row.track_stock,
                     stock_units=row.stock_units, stock_total=row.stock_total,
-                    refill_alert_days=row.refill_alert_days, reminders=row.reminders, paused=row.paused)
+                    refill_alert_days=row.refill_alert_days, reminders=row.reminders, paused=row.paused,
+                    stock_set_at=row.stock_set_at)
     elif kind == "dose_logs":
         iso = lambda v: v.isoformat(timespec="seconds") if v else None  # noqa: E731
         base.update(medication_uuid=med_uuid.get(row.medication_id), scheduled_at=iso(row.scheduled_at),
-                    status=row.status, acted_at=iso(row.acted_at), snoozed_until=iso(row.snoozed_until), note=row.note)
+                    status=row.status, acted_at=iso(row.acted_at), snoozed_until=iso(row.snoozed_until), note=row.note,
+                    taken_utc=row.taken_utc)
     elif kind == "water_logs":
         base.update(amount_ml=row.amount_ml, kind=row.kind, logged_at=row.logged_at.isoformat(timespec="seconds"))
     elif kind == "contacts":

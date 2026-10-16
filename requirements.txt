@@ -3,6 +3,8 @@ flet==1.0.4
 httpx>=0.27
 tzdata
 plyer>=2.1           # notificações nativas no desktop (opcional)
+flet-local-auth==1.0.4                       # biometria no app compilado
+./extensions/medremind_notifications         # lembretes agendados no sistema (app compilado)
 
 # Servidor (também em requirements-server.txt, usado pela imagem Docker)
 -r requirements-server.txt

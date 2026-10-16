@@ -12,8 +12,10 @@ import flet as ft
 from ..client.session import CloudSession
 from ..core.container import Container
 from ..core.models import DoseStatus, PlannedDose
+from ..core.services import notification_plan
 from . import theme as th
 from .components import T, primary_button, secondary_button
+from .native import Native
 
 log = logging.getLogger("medremind")
 
@@ -30,13 +32,16 @@ REMINDER_INTERVAL_S = 30
 SYNC_INTERVAL_S = 30          # sincroniza pelo menos a cada 30 s com sessão ativa
 TICK_S = 5                    # o laço acorda a cada 5 s para lembretes, sync e notificações
 NOTIFY_POLL_S = 60
+PLAN_INTERVAL_S = 300         # reagenda os lembretes do sistema pelo menos a cada 5 min
 # Telas que podem ser redesenhadas quando chegam dados de outro aparelho (formulários não).
 LIVE_ROUTES = {"home", "meds", "history", "stock", "hydration", "profile", "patients", "notifications", "care"}
 
 
 class MedRemindApp:
-    def __init__(self, page: ft.Page, device: Container, session: CloudSession | None = None) -> None:
+    def __init__(self, page: ft.Page, device: Container, session: CloudSession | None = None,
+                 multiuser: bool = False) -> None:
         self.page = page
+        self.multiuser = multiuser      # web hospedado: sempre com conta, sem modo offline
         self.device = device            # dados do aparelho: boas-vindas, consentimento, PIN, modo offline
         self.session = session          # conta na nuvem (opcional)
         self.routes: dict[str, ViewBuilder] = {}
@@ -47,6 +52,8 @@ class MedRemindApp:
         self._reminder_task = None
         self._syncing = False
         self._sync_due = 0.0
+        self._plan_dirty = True
+        self.native: Native | None = None
         self._register_routes()
 
     # -------------------------------------------------------------- dados ativos
@@ -82,6 +89,13 @@ class MedRemindApp:
 
     def request_sync(self) -> None:
         self._sync_due = 0.0
+
+    def own_container(self) -> Container | None:
+        """Dados do próprio usuário (lembretes do sistema são sempre dos próprios remédios)."""
+        if not self.cloud:
+            return self.device
+        own = next((p for p in self.session.patients if p.role == "owner"), None)
+        return self.session.container(own.id) if own else None
 
     # ------------------------------------------------------------------ setup
     def _register_routes(self) -> None:
@@ -119,12 +133,13 @@ class MedRemindApp:
         p.bgcolor = th.BG
         p.padding = 0
         p.spacing = 0
+        self.native = Native(p)
         self.device.audit.log("app_aberto")
         if not self.device.onboarded:
             self.go("onboarding", replace=True)
         elif not self.device.consent_given:
             self.go("consent", replace=True)
-        elif self.session and not self.session.logged_in and not self.device.settings.get("mode"):
+        elif self.session and not self.session.logged_in and (self.multiuser or not self.device.settings.get("mode")):
             self.go("account", replace=True, first_run=True)
         elif self.device.security.has_pin:
             self.go("lock", replace=True)
@@ -139,6 +154,16 @@ class MedRemindApp:
         self.go(start if start in self.routes else "home", replace=True, reset=True)
         if self._reminder_task is None:
             self._reminder_task = self.page.run_task(self._reminder_loop)
+            self.page.run_task(self._native_setup)
+
+    def shutdown(self) -> None:
+        """Encerra tarefas de fundo (aba fechada)."""
+        task, self._reminder_task = self._reminder_task, None
+        if task is not None:
+            try:
+                task.cancel()
+            except Exception:  # noqa: BLE001
+                pass
 
     def lock(self) -> None:
         if self.device.security.has_pin:
@@ -172,6 +197,7 @@ class MedRemindApp:
             self.go("home", reset=True)
 
     def refresh(self, *_):
+        self._plan_dirty = True  # algo pode ter mudado: reagenda os lembretes do sistema
         self.render()
 
     def render(self) -> None:
@@ -285,7 +311,7 @@ class MedRemindApp:
     async def _reminder_loop(self) -> None:
         """Laço de fundo: lembretes (30 s), sincronização (30 s ou logo após mudanças) e notificações."""
         loop = asyncio.get_running_loop()
-        next_reminder = next_notify = 0.0
+        next_reminder = next_notify = next_plan = 0.0
         self._sync_due = 0.0
         while True:
             now = loop.time()
@@ -305,9 +331,34 @@ class MedRemindApp:
                     if now >= next_notify:
                         next_notify = now + NOTIFY_POLL_S
                         await self._poll_notifications()
+                if self.unlocked and self.native and self.native.can_schedule and (self._plan_dirty or now >= next_plan):
+                    self._plan_dirty = False
+                    next_plan = now + PLAN_INTERVAL_S
+                    await self.schedule_system_reminders()
             except Exception:
                 log.exception("Falha no laço de fundo")
             await asyncio.sleep(TICK_S)
+
+    async def _native_setup(self) -> None:
+        """Na primeira vez pede permissão de notificação; depois agenda os lembretes."""
+        if not self.native or not self.native.can_schedule:
+            return
+        if not self.device.settings.get("notif_permission_asked"):
+            self.device.settings.set("notif_permission_asked", True)
+            ok = await self.native.request_notification_permission()
+            if not ok:
+                self.toast("Sem permissão de notificação: os lembretes só aparecem com o app aberto.")
+                return
+        await self.schedule_system_reminders()
+
+    async def schedule_system_reminders(self) -> int:
+        own = self.own_container()
+        if own is None or not self.native:
+            return 0
+        prefs = own.reminders.prefs()
+        reminders = await asyncio.to_thread(notification_plan.plan, own.schedule,
+                                            hide_names=bool(prefs.get("hide_names")))
+        return await self.native.schedule(reminders)
 
     async def _run_sync(self, manual: bool = False):
         self._syncing = True

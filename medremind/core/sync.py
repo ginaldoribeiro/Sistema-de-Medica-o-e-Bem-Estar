@@ -28,8 +28,8 @@ KINDS = ("medications", "dose_logs", "water_logs", "contacts")
 FIELDS = {
     "medications": ["name", "strength", "form", "dose_units", "frequency", "times", "weekdays", "instructions",
                     "start_date", "end_date", "track_stock", "stock_units", "stock_total", "refill_alert_days",
-                    "reminders", "paused"],
-    "dose_logs": ["scheduled_at", "status", "acted_at", "snoozed_until", "note"],
+                    "reminders", "paused", "stock_set_at"],
+    "dose_logs": ["scheduled_at", "status", "acted_at", "snoozed_until", "note", "taken_utc"],
     "water_logs": ["amount_ml", "kind", "logged_at"],
     "contacts": ["name", "relation", "phone", "is_doctor"],
 }

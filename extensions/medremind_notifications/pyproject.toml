@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "medremind-notifications"
+version = "0.1.0"
+description = "Extensão Flet do MedRemind: lembretes locais agendados (funcionam com o app fechado)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["flet==1.0.4"]
+
+# Mesmo layout das extensões oficiais do Flet: o pacote Python e, ao lado,
+# flutter/<nome>/ com o pacote Dart que o `flet build` incorpora ao app.
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.dart"]

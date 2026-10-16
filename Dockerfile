@@ -1,5 +1,7 @@
 # Imagem do backend do MedRemind
-FROM python:3.12-slim AS base
+# BASE_IMAGE permite trocar a base (ex.: espelho interno de registro); padrão: imagem oficial do Python.
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE} AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 

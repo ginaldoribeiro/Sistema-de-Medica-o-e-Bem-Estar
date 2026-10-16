@@ -262,3 +262,78 @@ def test_health_and_security_headers(server):
     r = c.get("/health")
     assert r.status_code == 200 and r.headers["x-content-type-options"] == "nosniff"
     assert c.get("/ready").json()["status"] == "ready"
+
+
+def test_stock_converges_when_two_devices_take_doses_offline(server, tmp_path):
+    """Estoque derivado: doses registradas offline em dois aparelhos descontam as duas."""
+    from datetime import time
+
+    from medremind.core.container import Container
+    from medremind.core.models import Medication
+    from medremind.core.sync import SyncEngine
+
+    c, _ = server
+    h, pid, _ = register(c, "estoque@exemplo.com")
+
+    class Transport:
+        def sync(self, patient_id, cursor, changes):
+            return c.post(f"{API}/patients/{patient_id}/sync", headers=h,
+                          json={"cursor": cursor, "changes": changes}).json()
+
+    a = Container.build(tmp_path / "a.db", api_key="")
+    b = Container.build(tmp_path / "b.db", api_key="")
+    ea, eb = SyncEngine(a.db, Transport(), pid), SyncEngine(b.db, Transport(), pid)
+    m = a.meds.save(Medication("Insulina", times=[time(0, 0), time(0, 1)], stock_units=10))
+    ea.sync()
+    eb.sync()
+    today = datetime.now().date()
+
+    # Offline: cada aparelho registra uma dose diferente
+    a.schedule.mark_taken(m.id, datetime.combine(today, time(0, 0)))
+    mb = b.meds.list()[0]
+    b.schedule.mark_taken(mb.id, datetime.combine(today, time(0, 1)))
+    assert a.meds.get(m.id).stock_units == 9 and b.meds.list()[0].stock_units == 9
+
+    ea.sync()
+    eb.sync()
+    ea.sync()
+    assert a.meds.get(m.id).stock_units == b.meds.list()[0].stock_units == 8
+    api_med = c.get(f"{API}/patients/{pid}/medications", headers=h).json()[0]
+    assert api_med["stock_units"] == 8
+
+    # Reposição vira a nova base em todos os lados
+    a.meds.refill(m.id, 30)
+    ea.sync()
+    eb.sync()
+    assert b.meds.list()[0].stock_units == 38
+    # Editar só as instruções não "come" doses registradas em outro aparelho:
+    # B registra de novo uma dose (depois da reposição) enquanto A edita a medicação offline.
+    at = datetime.combine(today, time(0, 1))
+    b.schedule.undo(mb.id, at)
+    b.schedule.mark_taken(mb.id, at)
+    ma = a.meds.get(m.id)
+    ma.instructions = "aplicar no abdômen"
+    a.meds.save(ma)
+    eb.sync()
+    ea.sync()
+    eb.sync()
+    assert a.meds.get(m.id).stock_units == b.meds.list()[0].stock_units == 37
+    assert a.meds.get(m.id).instructions == "aplicar no abdômen"
+
+
+def test_rate_limit_shared_between_replicas_with_redis():
+    """Duas "réplicas" usando o mesmo Redis somam as tentativas."""
+    url = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6390/15")
+    from backend.ratelimit import RateLimiter, RedisRateLimiter, make_limiter
+
+    try:
+        r1, r2 = RedisRateLimiter(url, 3, 60), RedisRateLimiter(url, 3, 60)
+        r1.r.ping()
+    except Exception:
+        pytest.skip("Redis não disponível")
+    r1.reset("login:x")
+    assert [r1.hit("login:x"), r2.hit("login:x"), r1.hit("login:x")] == [True, True, True]
+    assert r2.hit("login:x") is False and r1.hit("login:x") is False
+    r1.reset("login:x")
+    assert r2.hit("login:x") is True
+    assert isinstance(make_limiter("redis://127.0.0.1:1/0", 3, 60), RateLimiter)  # cai para memória

@@ -83,6 +83,12 @@ MIGRATIONS: list[str] = [
     """
         for t in ("medications", "dose_logs", "water_logs", "contacts")
     ),
+    # 3 — estoque derivado: base (stock_units) + momento da base; doses tomadas depois dela descontam
+    """
+    ALTER TABLE medications ADD COLUMN stock_set_at TEXT;
+    ALTER TABLE dose_logs ADD COLUMN taken_utc TEXT;
+    UPDATE medications SET stock_set_at = strftime('%Y-%m-%dT%H:%M:%f', 'now');
+    """,
 ]
 
 SYNC_TABLES = ("medications", "dose_logs", "water_logs", "contacts")

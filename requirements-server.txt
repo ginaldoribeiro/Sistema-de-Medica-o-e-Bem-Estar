@@ -8,3 +8,4 @@ pyjwt>=2.8
 email-validator>=2.1
 httpx>=0.27
 tzdata
+redis>=5            # limite de tentativas compartilhado entre réplicas (opcional)

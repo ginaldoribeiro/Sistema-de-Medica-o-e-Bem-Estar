@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from medremind.core.repositories import utcnow_iso
+
 from .. import orm, schemas
 from ..config import Settings
 from ..deps import client_ip, current_user, get_db, get_settings
@@ -50,7 +52,7 @@ def register(body: schemas.RegisterIn, request: Request, db: Session = Depends(g
     db.flush()
     patient = orm.Patient(owner_user_id=user.id, timezone=body.timezone or settings.default_timezone,
                           profile={"name": user.name, "email": email, "water_goal_ml": 2000},
-                          profile_updated_at="")
+                          profile_updated_at=utcnow_iso())
     db.add(patient)
     db.flush()
     db.add(orm.AuditEvent(patient_id=patient.id, user_id=user.id, event="conta_criada",

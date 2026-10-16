@@ -13,10 +13,20 @@ services:
       interval: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
   api:
     build: .
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       MEDREMIND_ENV: production
@@ -24,6 +34,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no arquivo .env}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8550}
       SCHEDULER_ENABLED: "false"          # alertas ficam no serviço worker
+      REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
     ports:
@@ -41,6 +52,8 @@ services:
       SCHEDULER_INTERVAL_SECONDS: "300"
       FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
     command: ["python", "-m", "backend.worker", "--loop"]
+    healthcheck:
+      disable: true   # o worker não serve HTTP
 
 volumes:
   pgdata:

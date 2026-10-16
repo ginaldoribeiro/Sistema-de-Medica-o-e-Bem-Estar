@@ -34,7 +34,7 @@ RISK_STYLE = {"alto": (th.DANGER_TINT, th.DANGER, "Risco alto"), "medio": (th.WA
 def _after_login(app, first_run: bool) -> None:
     app.device.settings.set("mode", "cloud")
     app.request_sync()
-    if first_run and not app.device.security.has_pin:
+    if first_run and not app.device.security.has_pin and not app.multiuser:
         app.go("pin_setup", replace=True, first_run=True)
     else:
         app.unlock()
@@ -113,7 +113,7 @@ def account_view(app, first_run: bool = False, mode: str = "login", kind: str = 
                                                              mode=toggle[1]), height=48)]),
         advanced,
     ]
-    if first_run:
+    if first_run and not app.multiuser:
         children.append(ft.Row([link_button("Usar sem conta (só neste aparelho)", offline, th.INK_2)],
                                alignment=ft.MainAxisAlignment.CENTER))
     header = None if first_run else top_bar("Conta", on_back=app.back)

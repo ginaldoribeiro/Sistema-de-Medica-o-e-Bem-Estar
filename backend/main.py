@@ -22,7 +22,7 @@ from sqlalchemy import text
 from .config import Settings
 from .db import DB
 from .notifications import PushSender, scan_all
-from .ratelimit import RateLimiter
+from .ratelimit import make_limiter
 from .routers import auth, care, me, patients
 
 log = logging.getLogger("medremind.api")
@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None, db: DB | None = None) -> FastAP
                   description="Backend do MedRemind: contas, equipe de cuidado, sincronização, alertas e relatórios.")
     app.state.settings = settings
     app.state.db = db
-    app.state.auth_limiter = RateLimiter(limit=10, window_s=300)
+    app.state.auth_limiter = make_limiter(settings.redis_url, limit=10, window_s=300)
 
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                        allow_methods=["*"], allow_headers=["Authorization", "Content-Type", "X-Request-ID"])

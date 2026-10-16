@@ -70,8 +70,9 @@ def consent_view(app):
     accepted.on_change = toggle
     button.on_click = accept
     points = [
-        (ft.Icons.PHONE_ANDROID, "Seus dados ficam no aparelho",
-         "Medicações, doses e contatos são guardados localmente, sem conta e sem nuvem."),
+        (ft.Icons.PHONE_ANDROID, "Você escolhe onde ficam os dados",
+         "Sem conta, tudo fica só neste aparelho. Com conta, os dados vão para o seu servidor MedRemind "
+         "e só quem você convidar pode ver."),
         (ft.Icons.LOCK, "Você controla o acesso", "Proteja o app com PIN e veja quem acessou na auditoria."),
         (ft.Icons.FILE_DOWNLOAD, "Você leva seus dados", "Exporte backup e relatórios quando quiser."),
         (ft.Icons.SMART_TOY, "Assistente com IA é opcional",
@@ -160,16 +161,42 @@ def lock_view(app):
     stored = app.device.settings.get("pin_length", 4)
     length = stored if isinstance(stored, int) else 4
     pad = _PinPad(length, done)
+
+    # Biometria (digital/rosto) quando o usuário ativou e o aparelho suporta; o PIN continua de reserva.
+    use_bio = bool(app.device.settings.get("biometric_unlock")) and app.native is not None
+    bio_button = ft.TextButton(content=T("Usar biometria", 15, 800, th.PRIMARY), icon=ft.Icons.FINGERPRINT,
+                               icon_color=th.PRIMARY, visible=False)
+
+    async def try_biometrics(e=None):
+        if await app.native.authenticate("Desbloquear o MedRemind"):
+            app.device.audit.log("login_ok", "biometria")
+            app.unlock()
+        else:
+            message.value, message.color = "Biometria não confirmada. Use o PIN.", th.INK_2
+            message.update()
+
+    async def offer_biometrics():
+        if await app.native.biometrics_available():
+            bio_button.visible = True
+            bio_button.update()
+            await try_biometrics()
+
+    if use_bio:
+        bio_button.on_click = try_biometrics
+        app.page.run_task(offer_biometrics)
+
     return ft.Container(ft.Column([
         ft.Container(expand=True),
         ft.Container(ft.Icon(ft.Icons.FINGERPRINT, size=56, color=th.PRIMARY), width=120, height=120,
-                     border_radius=36, bgcolor=th.SURFACE, alignment=ft.Alignment.CENTER, shadow=th.SHADOW),
+                     border_radius=36, bgcolor=th.SURFACE, alignment=ft.Alignment.CENTER, shadow=th.SHADOW,
+                     on_click=(lambda e: app.page.run_task(try_biometrics)) if use_bio else None),
         T("Proteja seus dados", 26, 800, text_align=ft.TextAlign.CENTER),
         message,
         ft.Container(height=8),
         pad.dots,
         ft.Container(height=12),
         pad.keypad(),
+        bio_button,
         ft.Container(expand=True),
         ft.Container(ft.Row([ft.Icon(ft.Icons.VERIFIED_USER, size=16, color=th.SUCCESS_INK),
                              T("Dados protegidos no aparelho", 13, 700, th.SUCCESS_INK)], spacing=6, tight=True),

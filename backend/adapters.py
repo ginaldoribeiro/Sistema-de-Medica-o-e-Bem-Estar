@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -45,23 +45,37 @@ def patient_clock(patient: orm.Patient):
 
 
 # ------------------------------------------------------------------- conversões
-def med_to_domain(r: orm.Medication) -> dm.Medication:
+def effective_stock_expr():
+    """Estoque efetivo = base - dose_units x doses tomadas depois da base (mesma regra do app)."""
+    d = orm.DoseLog
+    taken = (select(func.count()).where(d.medication_id == orm.Medication.id, d.deleted.is_(False),
+                                        d.status == "taken", d.taken_utc.is_not(None),
+                                        or_(orm.Medication.stock_set_at.is_(None),
+                                            d.taken_utc > orm.Medication.stock_set_at))
+             .correlate(orm.Medication).scalar_subquery())
+    return orm.Medication.stock_units - orm.Medication.dose_units * taken
+
+
+def med_to_domain(r: orm.Medication, effective: float | None = None) -> dm.Medication:
     return dm.Medication(
         id=r.id, name=r.name, strength=r.strength, form=dm.MedForm(r.form), dose_units=r.dose_units,
         frequency=dm.Frequency(r.frequency), times=[time.fromisoformat(t) for t in r.times.split(",") if t],
         weekdays=[int(x) for x in r.weekdays.split(",") if x != ""], instructions=r.instructions,
-        start_date=r.start_date, end_date=r.end_date, track_stock=r.track_stock, stock_units=r.stock_units,
+        start_date=r.start_date, end_date=r.end_date, track_stock=r.track_stock,
+        stock_units=max(0.0, r.stock_units if effective is None else float(effective)),
         stock_total=r.stock_total, refill_alert_days=r.refill_alert_days, reminders=r.reminders, paused=r.paused,
     )
 
 
-def apply_med_fields(r: orm.Medication, m: dm.Medication) -> None:
+def apply_med_fields(r: orm.Medication, m: dm.Medication, stock_changed: bool = True) -> None:
     r.name, r.strength, r.form = m.name.strip(), m.strength.strip(), m.form.value
     r.dose_units, r.frequency = m.dose_units, m.frequency.value
     r.times = ",".join(sorted(t.strftime("%H:%M") for t in m.times))
     r.weekdays = ",".join(str(w) for w in sorted(set(m.weekdays)))
     r.instructions, r.start_date, r.end_date = m.instructions.strip(), m.start_date, m.end_date
-    r.track_stock, r.stock_units, r.stock_total = m.track_stock, m.stock_units, m.stock_total
+    r.track_stock, r.stock_total = m.track_stock, m.stock_total
+    if stock_changed:  # nova base de estoque informada pelo usuário
+        r.stock_units, r.stock_set_at = m.stock_units, utcnow_iso()
     r.refill_alert_days, r.reminders, r.paused = m.refill_alert_days, m.reminders, m.paused
 
 
@@ -81,19 +95,22 @@ class SqlMedicationRepo(_Base):
         return select(orm.Medication).where(orm.Medication.patient_id == self.patient.id,
                                             orm.Medication.deleted.is_(False))
 
+    def _with_stock(self, q):
+        return self.db.execute(q.add_columns(effective_stock_expr())).all()
+
     def list(self, include_paused: bool = True) -> list[dm.Medication]:
         q = self._q()
         if not include_paused:
             q = q.where(orm.Medication.paused.is_(False))
-        rows = self.db.scalars(q.order_by(orm.Medication.paused, orm.Medication.name)).all()
-        return [med_to_domain(r) for r in rows]
+        rows = self._with_stock(q.order_by(orm.Medication.paused, orm.Medication.name))
+        return [med_to_domain(r, eff) for r, eff in rows]
 
     def row(self, med_id: int) -> orm.Medication | None:
         return self.db.scalar(self._q().where(orm.Medication.id == med_id))
 
     def get(self, med_id: int) -> dm.Medication | None:
-        r = self.row(med_id)
-        return med_to_domain(r) if r else None
+        rows = self._with_stock(self._q().where(orm.Medication.id == med_id))
+        return med_to_domain(*rows[0]) if rows else None
 
     def add(self, m: dm.Medication) -> dm.Medication:
         r = orm.Medication(patient_id=self.patient.id)
@@ -105,18 +122,16 @@ class SqlMedicationRepo(_Base):
         return m
 
     def update(self, m: dm.Medication) -> dm.Medication:
+        current = self.get(m.id)
         r = self.row(m.id)
-        if r is None:
+        if r is None or current is None:
             raise ValueError("Medicação não encontrada")
-        apply_med_fields(r, m)
+        apply_med_fields(r, m, stock_changed=abs(current.stock_units - m.stock_units) > 1e-9)
         self._touch(r)
         return m
 
     def adjust_stock(self, med_id: int, delta: float) -> None:
-        r = self.row(med_id)
-        if r and r.track_stock:
-            r.stock_units = max(0.0, r.stock_units + delta)
-            self._touch(r)
+        """Sem efeito: o estoque é derivado dos registros de dose."""
 
     def delete(self, med_id: int) -> None:
         r = self.row(med_id)
@@ -160,7 +175,9 @@ class SqlDoseLogRepo(_Base):
             r = orm.DoseLog(patient_id=self.patient.id, medication_id=log.medication_id,
                             scheduled_at=log.scheduled_at)
             self.db.add(r)
+        was_taken = r.status == "taken" and not r.deleted and r.taken_utc
         r.status, r.acted_at, r.snoozed_until, r.note = log.status.value, log.acted_at, log.snoozed_until, log.note
+        r.taken_utc = (r.taken_utc if was_taken else utcnow_iso()) if log.status.value == "taken" else None
         r.deleted = False
         self._touch(r)
         self.db.flush()

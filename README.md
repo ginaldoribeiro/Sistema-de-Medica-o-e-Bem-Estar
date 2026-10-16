@@ -23,15 +23,31 @@ python main.py --web            # navegador: http://localhost:8550
 python main.py                  # janela desktop
 python main.py --web --demo     # dados de exemplo, sem conta
 
-# Testes (40): núcleo, backend, sincronização e cliente
+# Testes (46): núcleo, backend, sincronização, cliente e recursos nativos
 python -m pytest
 ```
 
-Produção local com PostgreSQL, API e worker de alertas:
+> Instale pelo `requirements.txt` (ele inclui a extensão local de lembretes). `pip install -e .` não serve
+> aqui, porque o `pyproject.toml` usa `${PROJECT_ROOT}`, que só o `flet build` resolve.
+
+Produção local com PostgreSQL, Redis, API e worker de alertas:
 
 ```bash
 cp .env.example .env            # defina JWT_SECRET e POSTGRES_PASSWORD
 docker compose up --build
+```
+
+Hospedar o app web para várias pessoas (cada aba com sessão própria, sempre com conta):
+
+```bash
+python main.py --web --multiuser --server https://api.seudominio.com.br
+```
+
+Gerar o app de celular (precisa do Flutter SDK e do Android SDK/Xcode na sua máquina):
+
+```bash
+flet build apk      # Android
+flet build ipa      # iOS
 ```
 
 ## Funcionalidades
@@ -49,7 +65,7 @@ docker compose up --build
 - **Relatório para o médico:** CSV e página para imprimir.
 - **Segurança e dados:** PIN com bloqueio progressivo, backup com verificação SHA-256 e auditoria local.
 
-### Conta e equipe de cuidado (novo)
+### Conta e equipe de cuidado
 - **Conta:** cadastro e login por e-mail; a sessão se renova sozinha e funciona em vários aparelhos.
 - **Convites:** o paciente gera um código de 8 caracteres (válido por 7 dias, uso único) para um cuidador ou
   profissional, escolhendo entre **só leitura** e **pode editar**. Pode mudar ou remover o acesso a qualquer
@@ -161,6 +177,7 @@ Documentação interativa em `/docs`. Principais rotas (prefixo `/api/v1`):
 | `ANTHROPIC_API_KEY` / `MEDREMIND_LLM_MODEL` | os dois | Assistente com IA |
 | `MEDREMIND_SERVER_URL` | app | Endereço do servidor |
 | `MEDREMIND_DATA_DIR` | app | Pasta dos dados locais |
+| `REDIS_URL` | servidor | Limite de tentativas compartilhado entre réplicas (sem Redis, fica em memória) |
 
 Migrações: `alembic upgrade head`. Para mudar o modelo, rode `alembic revision --autogenerate -m "..."`.
 
@@ -171,23 +188,54 @@ python -m pytest                                                     # tudo com 
 TEST_DATABASE_URL=postgresql+psycopg://user@host/db pytest tests/test_backend.py   # backend no PostgreSQL
 ```
 
+`tests/test_backend.py` também testa o limite de tentativas no Redis quando há um em `127.0.0.1:6390`
+(ou em `TEST_REDIS_URL`); sem Redis, esse teste é pulado.
+
 O CI no GitHub Actions faz quatro coisas:
 - lint e testes em Python 3.10, 3.12 e 3.13;
 - testes do backend num PostgreSQL 16 real;
 - `alembic check`, que garante que modelo e migração batem;
 - build da imagem Docker.
 
-## Limitações conhecidas e próximos passos
+## Recursos nativos do celular
 
-- **Notificação com o app fechado.** No celular, exige uma extensão Flet nativa
-  (`flutter_local_notifications` / FCM). O servidor já registra aparelhos e envia push.
-- **Biometria.** Exige uma extensão `local_auth`. Hoje o bloqueio é por PIN.
-- **Estoque com edição simultânea.** Se dois aparelhos tomarem doses offline ao mesmo tempo, vale a última
-  contagem enviada. O próximo passo é calcular o estoque a partir dos registros de dose.
-- **Várias réplicas da API.** O limite de tentativas fica em memória; com mais de uma instância, troque por
-  Redis.
-- **App web para várias pessoas.** O modo `--web` é pensado para uso pessoal. Para hospedar para várias
-  pessoas, crie uma sessão por página.
+- **Biometria:** extensão oficial `flet-local-auth`. Com o PIN ativo, a pessoa liga "Desbloquear com
+  biometria" no Perfil; a tela de bloqueio pede digital ou rosto e o PIN fica de reserva.
+- **Lembretes com o app fechado:** extensão própria em `extensions/medremind_notifications`. O lado Python é
+  um serviço Flet; o lado Dart usa `flutter_local_notifications`.
+  - O app agenda as doses das próximas 48 h no sistema (no máximo 60, por causa do limite do iOS).
+  - A lista é refeita a cada mudança e a cada 5 min, e os ids estáveis evitam avisos duplicados.
+  - A opção "Ocultar nome do remédio" esconde o nome na tela bloqueada.
+- **Permissões:** estão declaradas no `pyproject.toml` (`[tool.flet.android.permission]` e
+  `NSFaceIDUsageDescription`).
+- **Fora do app compilado** (web, Linux, `python main.py`), os dois recursos ficam indisponíveis sem erro, e
+  o app usa PIN e lembretes internos.
+
+## Estoque derivado das doses
+
+A quantidade em estoque não é mais um contador que cada aparelho decrementa. Cada medicação guarda uma
+**base** (a quantidade informada na reposição ou correção) e o **momento** dela. O estoque mostrado é a base
+menos as doses tomadas depois desse momento.
+
+Como cada dose é um registro sincronizado, dois aparelhos que registram doses offline chegam ao mesmo número
+depois de sincronizar. Editar só o nome ou as instruções não mexe na base. A regra é a mesma no app (SQL no
+SQLite) e no servidor (subconsulta no PostgreSQL).
+
+## Limitações conhecidas
+
+- **Celular não compilado nem testado aqui.** Neste ambiente o Flutter SDK e o pub.dev estão bloqueados, então
+  biometria e lembretes do sistema não foram compilados nem testados num aparelho.
+  - O código Python está testado. O Dart segue o mesmo formato das extensões oficiais do Flet, e o pacote da
+    extensão gera um wheel com o mesmo layout delas.
+  - No primeiro `flet build apk`, confira três pontos: os receivers de agendamento do
+    `flutter_local_notifications` no AndroidManifest; o *core library desugaring* no Gradle (exigido pelo
+    plugin); e o caminho `${PROJECT_ROOT}` da dependência local.
+- **Push do servidor (FCM).** O servidor já registra aparelhos e envia push. No app ainda falta a extensão
+  `firebase_messaging` para receber.
+- **Imagem Docker.** Foi gerada e executada aqui (API e worker saudáveis com PostgreSQL, migrações aplicadas,
+  usuário sem privilégio). Como o Docker Hub está bloqueado neste ambiente, a base foi uma imagem Ubuntu
+  24.04 com Python 3.12 montada localmente, via `--build-arg BASE_IMAGE=...`. Com a imagem oficial
+  `python:3.12-slim`, o CI do GitHub faz a mesma verificação.
 
 > O MedRemind organiza lembretes e registros. Ele não substitui orientação médica.
 

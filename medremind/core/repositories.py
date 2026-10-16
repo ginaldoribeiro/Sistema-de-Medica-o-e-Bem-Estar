@@ -69,7 +69,7 @@ class MedicationRepository:
             start_date=_d(r["start_date"]),
             end_date=_d(r["end_date"]),
             track_stock=bool(r["track_stock"]),
-            stock_units=r["stock_units"],
+            stock_units=r["stock_effective"] if "stock_effective" in r.keys() else r["stock_units"],
             stock_total=r["stock_total"],
             refill_alert_days=r["refill_alert_days"],
             reminders=bool(r["reminders"]),
@@ -97,15 +97,26 @@ class MedicationRepository:
             int(m.paused),
         )
 
+    # Estoque efetivo = base informada pelo usuário - doses tomadas depois dela.
+    # Assim dois aparelhos que registram doses offline convergem: cada registro de dose
+    # chega por sincronização e desconta uma única vez, em qualquer aparelho.
+    # (COUNT dentro da subconsulta: um SUM(m.dose_units) viraria agregação da consulta externa.)
+    SELECT = """SELECT m.*, MAX(0, m.stock_units - m.dose_units * (
+                   SELECT COUNT(*) FROM dose_logs d
+                   WHERE d.medication_id = m.id AND d.deleted = 0 AND d.status = 'taken'
+                     AND d.taken_utc IS NOT NULL AND (m.stock_set_at IS NULL OR d.taken_utc > m.stock_set_at)
+                 )) AS stock_effective
+                FROM medications m"""
+
     def list(self, include_paused: bool = True) -> list[Medication]:
-        sql = "SELECT * FROM medications WHERE deleted = 0"
+        sql = self.SELECT + " WHERE deleted = 0"
         if not include_paused:
             sql += " AND paused = 0"
         sql += " ORDER BY paused, name COLLATE NOCASE"
         return [self._from_row(r) for r in self.db.query(sql)]
 
     def get(self, med_id: int) -> Medication | None:
-        r = self.db.query_one("SELECT * FROM medications WHERE id = ? AND deleted = 0", (med_id,))
+        r = self.db.query_one(self.SELECT + " WHERE id = ? AND deleted = 0", (med_id,))
         return self._from_row(r) if r else None
 
     def uuid_of(self, med_id: int) -> str | None:
@@ -116,29 +127,39 @@ class MedicationRepository:
         m.id = self.db.execute(
             """INSERT INTO medications (name, strength, form, dose_units, frequency, times, weekdays,
                instructions, start_date, end_date, track_stock, stock_units, stock_total,
-               refill_alert_days, reminders, paused, uuid, updated_at, dirty)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
-            self._params(m) + (new_uuid(), utcnow_iso()),
+               refill_alert_days, reminders, paused, uuid, updated_at, stock_set_at, dirty)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+            self._params(m) + (new_uuid(), now := utcnow_iso(), now),
         )
         return m
 
     def update(self, m: Medication) -> Medication:
         if m.id is None:
             raise ValueError("Medicação sem id não pode ser atualizada")
-        self.db.execute(
-            """UPDATE medications SET name=?, strength=?, form=?, dose_units=?, frequency=?, times=?,
-               weekdays=?, instructions=?, start_date=?, end_date=?, track_stock=?, stock_units=?,
-               stock_total=?, refill_alert_days=?, reminders=?, paused=?, updated_at=?, dirty=1 WHERE id=?""",
-            self._params(m) + (utcnow_iso(), m.id),
-        )
+        current = self.get(m.id)
+        now = utcnow_iso()
+        if current is not None and abs(current.stock_units - m.stock_units) < 1e-9:
+            # Estoque não mudou: mantém a base e o momento dela (não "engole" doses de outros aparelhos).
+            params = self._params(m)
+            self.db.execute(
+                """UPDATE medications SET name=?, strength=?, form=?, dose_units=?, frequency=?, times=?,
+                   weekdays=?, instructions=?, start_date=?, end_date=?, track_stock=?,
+                   stock_total=?, refill_alert_days=?, reminders=?, paused=?, updated_at=?, dirty=1 WHERE id=?""",
+                params[:11] + params[12:] + (now, m.id),
+            )
+        else:
+            # Usuário informou um novo estoque (reposição/correção): vira a nova base.
+            self.db.execute(
+                """UPDATE medications SET name=?, strength=?, form=?, dose_units=?, frequency=?, times=?,
+                   weekdays=?, instructions=?, start_date=?, end_date=?, track_stock=?, stock_units=?,
+                   stock_total=?, refill_alert_days=?, reminders=?, paused=?, updated_at=?, stock_set_at=?,
+                   dirty=1 WHERE id=?""",
+                self._params(m) + (now, now, m.id),
+            )
         return m
 
     def adjust_stock(self, med_id: int, delta: float) -> None:
-        self.db.execute(
-            """UPDATE medications SET stock_units = MAX(0, stock_units + ?), updated_at = ?, dirty = 1
-               WHERE id = ? AND track_stock = 1""",
-            (delta, utcnow_iso(), med_id),
-        )
+        """Sem efeito: o estoque é derivado dos registros de dose (ver SELECT)."""
 
     def delete(self, med_id: int) -> None:
         now = utcnow_iso()
@@ -180,11 +201,17 @@ class DoseLogRepository:
         return self._from_row(r) if r else None
 
     def upsert(self, log: DoseLog) -> None:
+        now = utcnow_iso()
+        taken = now if log.status == DoseStatus.TAKEN else None
         self.db.execute(
             """INSERT INTO dose_logs (medication_id, scheduled_at, status, acted_at, snoozed_until, note,
-                                      uuid, updated_at, deleted, dirty)
-               VALUES (?,?,?,?,?,?,?,?,0,1)
+                                      uuid, updated_at, taken_utc, deleted, dirty)
+               VALUES (?,?,?,?,?,?,?,?,?,0,1)
                ON CONFLICT(medication_id, scheduled_at) DO UPDATE SET
+                 taken_utc = CASE WHEN excluded.status = 'taken'
+                                  THEN COALESCE(CASE WHEN dose_logs.status = 'taken' AND dose_logs.deleted = 0
+                                                     THEN dose_logs.taken_utc END, excluded.taken_utc)
+                                  ELSE NULL END,
                  status=excluded.status, acted_at=excluded.acted_at, snoozed_until=excluded.snoozed_until,
                  note=excluded.note, updated_at=excluded.updated_at, deleted=0, dirty=1""",
             (
@@ -195,7 +222,8 @@ class DoseLogRepository:
                 _iso(log.snoozed_until),
                 log.note,
                 new_uuid(),
-                utcnow_iso(),
+                now,
+                taken,
             ),
         )
 

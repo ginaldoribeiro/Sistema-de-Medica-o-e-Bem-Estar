@@ -134,6 +134,7 @@ class Medication(SyncMixin, Base):
     track_stock: Mapped[bool] = mapped_column(Boolean, default=True)
     stock_units: Mapped[float] = mapped_column(Float, default=0)
     stock_total: Mapped[float] = mapped_column(Float, default=0)
+    stock_set_at: Mapped[str | None] = mapped_column(String(32))  # momento da base de estoque (UTC)
     refill_alert_days: Mapped[int] = mapped_column(Integer, default=7)
     reminders: Mapped[bool] = mapped_column(Boolean, default=True)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -151,6 +152,7 @@ class DoseLog(SyncMixin, Base):
     acted_at: Mapped[datetime | None] = mapped_column(DateTime)
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime)
     note: Mapped[str] = mapped_column(Text, default="")
+    taken_utc: Mapped[str | None] = mapped_column(String(32))  # quando virou "tomada" (desconta estoque)
 
     medication: Mapped[Medication] = relationship()
 
