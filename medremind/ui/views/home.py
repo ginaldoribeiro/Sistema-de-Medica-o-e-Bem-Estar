@@ -44,6 +44,8 @@ def _next_dose_card(app, dose) -> ft.Control:
     label = "Adiada até" if dose.status == DoseStatus.SNOOZED else "Próxima dose"
 
     def take(e):
+        if not app.guard_write():
+            return
         app.c.schedule.mark_taken(med.id, dose.scheduled_at)
         app.toast(f"{med.display_name} registrado", "Desfazer",
                   lambda e: (app.c.schedule.undo(med.id, dose.scheduled_at), app.refresh()))
@@ -94,24 +96,49 @@ def home_view(app):
     low_stock = [s for s in c.meds.stock_overview() if s.low]
     water = c.hydration.today()
 
+    actions: list[ft.Control] = []
+    if app.cloud:
+        actions.append(ft.IconButton(ft.Icons.NOTIFICATIONS_OUTLINED, icon_color=th.INK, bgcolor=th.SURFACE,
+                                     tooltip="Notificações", on_click=lambda e: app.go("notifications"),
+                                     badge=ft.Badge(label=str(app.unread), bgcolor=th.DANGER) if app.unread else None))
+    actions += [
+        ft.IconButton(ft.Icons.SMART_TOY_OUTLINED, icon_color=th.INK, bgcolor=th.SURFACE, tooltip="Assistente",
+                      on_click=lambda e: app.go("assistant")),
+        ft.Container(avatar(initials(profile.name or "Você")), on_click=lambda e: app.go("profile"),
+                     tooltip="Perfil", border_radius=44),
+    ]
     header = ft.Container(ft.Row([
         ft.Row([icon_badge(ft.Icons.MEDICATION, th.PRIMARY, "#FFFFFF", size=32, radius=10, icon_size=20),
                 T("MedRemind", 18, 800, th.PRIMARY)], spacing=8, tight=True),
-        ft.Row([
-            ft.IconButton(ft.Icons.SMART_TOY_OUTLINED, icon_color=th.INK, bgcolor=th.SURFACE, tooltip="Assistente",
-                          on_click=lambda e: app.go("assistant")),
-            ft.Container(avatar(initials(profile.name or "Você")), on_click=lambda e: app.go("profile"),
-                         tooltip="Perfil", border_radius=44),
-        ], spacing=8, tight=True),
+        ft.Row(actions, spacing=8, tight=True),
     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.Padding.only(left=20, right=20, top=16))
+
+    # Quem acompanha outras pessoas vê de quem são os dados e troca com um toque.
+    viewing_other = app.cloud and app.patient.role != "owner"
+    switcher = None
+    if app.cloud and (app.session.follows_others or viewing_other):
+        label = (f"Dados de {app.patient.name} · {app.patient.role_label}" + ("" if app.patient.can_write
+                                                                             else " · só leitura")
+                 if viewing_other else "Seus dados")
+        switcher = ft.Container(ft.Row([
+            ft.Icon(ft.Icons.SUPERVISOR_ACCOUNT if viewing_other else ft.Icons.PERSON, size=18,
+                    color="#FFFFFF" if viewing_other else th.PRIMARY_DARK),
+            T(label, 13, 700, "#FFFFFF" if viewing_other else th.PRIMARY_DARK, expand=True),
+            T("Trocar", 13, 800, "#FFFFFF" if viewing_other else th.PRIMARY),
+        ], spacing=8), bgcolor=th.PRIMARY_DARK if viewing_other else th.PRIMARY_TINT, border_radius=14,
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10), on_click=lambda e: app.go("patients"), ink=True)
 
     if doses:
         status_line = f"{taken} de {len(doses)} doses tomadas hoje." + (" Excelente!" if taken == len(doses) else "")
     else:
         status_line = "Nenhuma dose agendada para hoje."
 
-    children: list[ft.Control] = [
-        ft.Column([T(f"{greeting(c.schedule.clock())}{', ' + first_name if first_name else ''}!", 28, 800),
+    if viewing_other:
+        greeting_text = f"{first_name or 'Paciente'} hoje"
+    else:
+        greeting_text = f"{greeting(c.schedule.clock())}{', ' + first_name if first_name else ''}!"
+    children: list[ft.Control] = ([switcher] if switcher else []) + [
+        ft.Column([T(greeting_text, 28, 800),
                    T(status_line, 15, 400, th.INK_2)], spacing=4),
         ft.Row([
             card(ft.Column([_ring(ratio), T("Meta diária", 13, 600, th.INK_2)], spacing=10,

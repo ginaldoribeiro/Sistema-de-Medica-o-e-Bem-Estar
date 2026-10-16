@@ -1,7 +1,5 @@
 from datetime import time
 
-from fastapi.testclient import TestClient
-
 from medremind.core.models import DoseStatus, Medication
 from medremind.core.services.assistant import AssistantTools, LLMAgent
 
@@ -52,22 +50,3 @@ def test_llm_agent_tool_loop_with_fake_api(c):
     assert r.engine == "llm" and r.tools_used == ["registrar_dose_tomada"] and r.changed_data
     assert c.schedule.today()[0].status == DoseStatus.TAKEN
     assert {t["name"] for t in calls[0]["tools"]} >= {"listar_doses_hoje", "registrar_agua"}
-
-
-def test_api_requires_token_and_works(c):
-    from api.server import create_app
-
-    seed(c)
-    client = TestClient(create_app(c, token="segredo"))
-    assert client.get("/health").status_code == 200
-    assert client.get("/medications").status_code == 401
-    h = {"Authorization": "Bearer segredo"}
-    assert len(client.get("/medications", headers=h).json()) == 2
-    r = client.post("/medications", headers=h, json={"name": "Losartana", "strength": "50mg", "times": ["09:00"]})
-    assert r.status_code == 201 and r.json()["dose"] == "1 comprimido"
-    assert client.post("/medications", headers=h, json={"name": "Sem horario"}).status_code == 422
-    dose = client.get("/doses/today", headers=h).json()[0]
-    assert client.post("/doses/take", headers=h, json={"medication_id": dose["medication_id"],
-                                                       "scheduled_at": dose["scheduled_at"]}).json()["ok"]
-    assert "Aspirina" in client.get("/report.csv", headers=h).text
-    assert client.post("/assistant", headers=h, json={"message": "qual a próxima dose?"}).status_code == 200

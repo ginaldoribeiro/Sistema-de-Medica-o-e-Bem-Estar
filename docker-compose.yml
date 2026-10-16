@@ -1,0 +1,46 @@
+# Sobe PostgreSQL + API + worker de alertas:  docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: medremind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-troque-esta-senha}
+      POSTGRES_DB: medremind
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medremind"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MEDREMIND_ENV: production
+      DATABASE_URL: postgresql+psycopg://medremind:${POSTGRES_PASSWORD:-troque-esta-senha}@db:5432/medremind
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no arquivo .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8550}
+      SCHEDULER_ENABLED: "false"          # alertas ficam no serviço worker
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: .
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      MEDREMIND_ENV: production
+      DATABASE_URL: postgresql+psycopg://medremind:${POSTGRES_PASSWORD:-troque-esta-senha}@db:5432/medremind
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no arquivo .env}
+      SCHEDULER_INTERVAL_SECONDS: "300"
+      FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
+    command: ["python", "-m", "backend.worker", "--loop"]
+
+volumes:
+  pgdata:

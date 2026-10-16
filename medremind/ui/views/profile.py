@@ -1,7 +1,7 @@
 """Perfil, contatos, notificações, segurança, backup, relatórios e auditoria."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import flet as ft
@@ -31,6 +31,8 @@ from ..components import (
 
 
 def _edit_profile(app):
+    if not app.guard_write():
+        return
     c = app.c
     p = c.settings.profile()
     name = field("Nome completo", p.name)
@@ -74,6 +76,8 @@ def _edit_profile(app):
 
 
 def _add_contact(app):
+    if not app.guard_write():
+        return
     name = field("Nome")
     relation = field("Relação", hint="Ex.: Filha, Cardiologista")
     phone = field("Telefone", keyboard_type=ft.KeyboardType.PHONE)
@@ -91,6 +95,105 @@ def _add_contact(app):
     app.dialog("Novo contato", ft.Column([name, relation, phone, doctor], spacing=12, tight=True, width=340),
                [ft.TextButton(content=T("Cancelar", 14, 700, th.INK_2), on_click=app.close_dialog),
                 ft.TextButton(content=T("Salvar", 14, 800, th.PRIMARY), on_click=save)])
+
+
+def _account_section(app) -> list[ft.Control]:
+    """Conta na nuvem: sincronização, equipe, pacientes, LGPD e saída."""
+    if not app.session:
+        return []
+    if not app.cloud:
+        return [card(ft.Row([
+            icon_badge(ft.Icons.CLOUD_OFF, th.SURFACE_2, th.INK_2),
+            ft.Column([T("Usando só neste aparelho", 15, 700),
+                       T("Crie uma conta para sincronizar e compartilhar com cuidadores e médicos.", 13, 400,
+                         th.INK_2)], spacing=2, expand=True),
+            link_button("Entrar", lambda e: app.go("account")),
+        ], spacing=12))]
+
+    s = app.session
+    res = app.last_sync
+    pending = s.pending()
+    if res is None:
+        status, color = "Ainda não sincronizado nesta sessão", th.INK_2
+    elif res.ok:
+        status, color = f"Sincronizado às {res.at:%H:%M}" + (f" · {pending} pendente(s)" if pending else ""), th.SUCCESS_INK
+    else:
+        status, color = res.error + (f" ({pending} alteração(ões) guardada(s))" if pending else ""), th.WARN_INK
+
+    def export(e):
+        import json
+
+        try:
+            data = s.api.export()
+        except Exception as exc:  # noqa: BLE001 — mensagem amigável para qualquer falha
+            app.toast(getattr(exc, "message", str(exc)))
+            return
+        folder = app.device.data_dir / "exports"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"meus-dados-{datetime.now():%Y%m%d-%H%M}.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        app.dialog("Dados exportados", T(f"Arquivo salvo em:\n{path}", 14, 500, th.INK_2, selectable=True),
+                   [ft.TextButton(content=T("OK", 14, 800, th.PRIMARY), on_click=app.close_dialog)])
+
+    def delete_account(e):
+        pwd = field("Confirme sua senha", password=True, autofocus=True)
+
+        def ok(ev):
+            try:
+                s.delete_account(pwd.value or "")
+            except Exception as exc:  # noqa: BLE001
+                pwd.error = getattr(exc, "message", "Não foi possível excluir")
+                pwd.update()
+                return
+            app.close_dialog()
+            app.device.settings.delete("mode")
+            app.toast("Conta e dados excluídos do servidor.")
+            app.go("account", reset=True, first_run=True)
+        app.dialog("Excluir conta?", ft.Column([
+            T("Sua conta, seus remédios, histórico e vínculos com cuidadores serão apagados do servidor. "
+              "Isso não pode ser desfeito. Exporte seus dados antes, se quiser guardá-los.", 14, 400, th.INK_2),
+            pwd], spacing=12, tight=True, width=340),
+            [ft.TextButton(content=T("Cancelar", 14, 700, th.INK_2), on_click=app.close_dialog),
+             ft.TextButton(content=T("Excluir definitivamente", 14, 800, th.DANGER), on_click=ok)])
+
+    def logout(e):
+        def run():
+            s.logout()
+            app.device.settings.delete("mode")
+            app.go("account", reset=True, first_run=True)
+        app.confirm("Sair da conta?", "Os dados em cache neste aparelho serão apagados. Tudo continua salvo no servidor.",
+                    run, yes="Sair")
+
+    from .account import accept_code_dialog
+
+    chevron = ft.Icon(ft.Icons.CHEVRON_RIGHT, color=th.INK_2)
+    rows = [
+        list_row(icon_badge(ft.Icons.GROUPS, size=40, radius=12), "Equipe de cuidado",
+                 "Cuidadores e médicos com acesso", chevron, on_click=lambda e: app.go("care")),
+        list_row(icon_badge(ft.Icons.SUPERVISOR_ACCOUNT, size=40, radius=12), "Pacientes",
+                 f"{len(s.patients)} perfil(is) acessível(is)", chevron, on_click=lambda e: app.go("patients")),
+        list_row(icon_badge(ft.Icons.KEY, size=40, radius=12), "Tenho um código de convite",
+                 "Para acompanhar outra pessoa", chevron, on_click=lambda e: accept_code_dialog(app)),
+        list_row(icon_badge(ft.Icons.NOTIFICATIONS, size=40, radius=12), "Notificações",
+                 f"{app.unread} não lida(s)" if app.unread else "Alertas de doses e estoque", chevron,
+                 on_click=lambda e: app.go("notifications")),
+        list_row(icon_badge(ft.Icons.FILE_DOWNLOAD, size=40, radius=12), "Exportar meus dados",
+                 "Cópia completa em JSON (LGPD)", chevron, on_click=export),
+        list_row(icon_badge(ft.Icons.LOGOUT, th.SURFACE_2, th.INK_2, size=40, radius=12), "Sair da conta", "",
+                 None, on_click=logout),
+        list_row(icon_badge(ft.Icons.DELETE_FOREVER, th.DANGER_TINT, th.DANGER, size=40, radius=12),
+                 "Excluir conta", "Apaga tudo do servidor", None, on_click=delete_account, last=True),
+    ]
+    return [
+        section("Conta", caps=True),
+        card(ft.Column([
+            ft.Row([icon_badge(ft.Icons.CLOUD_DONE if (res and res.ok) else ft.Icons.CLOUD_SYNC, size=44),
+                    ft.Column([T(s.user.get("email", ""), 15, 700), T(status, 13, 600, color)], spacing=2, expand=True),
+                    ft.IconButton(ft.Icons.SYNC, icon_color=th.PRIMARY, bgcolor=th.PRIMARY_TINT,
+                                  tooltip="Sincronizar agora", on_click=app.sync_now)], spacing=12),
+        ], spacing=8)),
+        grouped(rows),
+    ]
 
 
 def profile_view(app):
@@ -132,13 +235,13 @@ def profile_view(app):
         return handler
 
     def security_row():
-        if c.security.has_pin:
+        if app.device.security.has_pin:
             def remove(e):
                 pin = field("PIN atual", password=True, keyboard_type=ft.KeyboardType.NUMBER, autofocus=True)
 
                 def ok(ev):
-                    if c.security.remove_pin(pin.value or ""):
-                        c.settings.delete("pin_length")
+                    if app.device.security.remove_pin(pin.value or ""):
+                        app.device.settings.delete("pin_length")
                         app.close_dialog()
                         app.toast("PIN removido")
                         app.refresh()
@@ -169,6 +272,7 @@ def profile_view(app):
 
     children = [
         header_card,
+        *_account_section(app),
         section("Dados pessoais", caps=True),
         grouped([info("Nascimento", p.birth_date.strftime("%d/%m/%Y") if p.birth_date else ""),
                  info("E-mail", p.email), info("Telefone", p.phone), info("Tipo sanguíneo", p.blood_type, last=True)]),
@@ -193,7 +297,7 @@ def profile_view(app):
         section("Segurança e dados", caps=True),
         grouped(tools),
         ft.Row([secondary_button("Bloquear agora", lambda e: app.lock(), ft.Icons.LOCK, height=48)],
-               visible=c.security.has_pin),
+               visible=app.device.security.has_pin),
         T(f"Assistente: {c.assistant.engine} · dados em {c.data_dir}", 12, 400, th.INK_2,
           text_align=ft.TextAlign.CENTER),
     ]

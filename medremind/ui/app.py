@@ -9,6 +9,7 @@ from typing import Callable
 
 import flet as ft
 
+from ..client.session import CloudSession
 from ..core.container import Container
 from ..core.models import DoseStatus, PlannedDose
 from . import theme as th
@@ -26,21 +27,65 @@ TABS = [
     ("profile", "Perfil", ft.Icons.PERSON_OUTLINE, ft.Icons.PERSON),
 ]
 REMINDER_INTERVAL_S = 30
+SYNC_INTERVAL_S = 30          # sincroniza pelo menos a cada 30 s com sessão ativa
+TICK_S = 5                    # o laço acorda a cada 5 s para lembretes, sync e notificações
+NOTIFY_POLL_S = 60
+# Telas que podem ser redesenhadas quando chegam dados de outro aparelho (formulários não).
+LIVE_ROUTES = {"home", "meds", "history", "stock", "hydration", "profile", "patients", "notifications", "care"}
 
 
 class MedRemindApp:
-    def __init__(self, page: ft.Page, container: Container) -> None:
+    def __init__(self, page: ft.Page, device: Container, session: CloudSession | None = None) -> None:
         self.page = page
-        self.c = container
+        self.device = device            # dados do aparelho: boas-vindas, consentimento, PIN, modo offline
+        self.session = session          # conta na nuvem (opcional)
         self.routes: dict[str, ViewBuilder] = {}
         self.stack: list[tuple[str, dict]] = []
         self.unlocked = False
+        self.unread = 0
+        self.last_sync = None
         self._reminder_task = None
+        self._syncing = False
+        self._sync_due = 0.0
         self._register_routes()
+
+    # -------------------------------------------------------------- dados ativos
+    @property
+    def cloud(self) -> bool:
+        return bool(self.session and self.session.logged_in and self.session.patients)
+
+    @property
+    def c(self) -> Container:
+        """Container do paciente em foco: o cache dele (nuvem) ou o banco do aparelho (offline)."""
+        return self.session.container() if self.cloud else self.device
+
+    @property
+    def patient(self):
+        return self.session.active if self.cloud else None
+
+    @property
+    def read_only(self) -> bool:
+        return bool(self.cloud and self.patient and not self.patient.can_write)
+
+    def guard_write(self) -> bool:
+        """Chame antes de gravar. Devolve False (e avisa) se o acesso for somente leitura."""
+        if self.read_only:
+            self.toast(f"Acesso somente leitura aos dados de {self.patient.name}.")
+            return False
+        return True
+
+    def switch_patient(self, patient_id: str) -> None:
+        ref = self.session.switch(patient_id)
+        self.toast(f"Vendo os dados de {ref.name}" if ref.role != "owner" else "Vendo os seus dados")
+        self.go("home", reset=True)
+        self.request_sync()
+
+    def request_sync(self) -> None:
+        self._sync_due = 0.0
 
     # ------------------------------------------------------------------ setup
     def _register_routes(self) -> None:
-        from .views import assistant, home, meds, onboarding, profile, tracking
+        from .views import account, assistant, home, meds, onboarding, profile, tracking
 
         self.routes.update({
             "onboarding": onboarding.onboarding_view,
@@ -59,6 +104,10 @@ class MedRemindApp:
             "audit": profile.audit_view,
             "assistant": assistant.assistant_view,
             "emergency": assistant.emergency_view,
+            "account": account.account_view,
+            "care": account.care_view,
+            "patients": account.patients_view,
+            "notifications": account.notifications_view,
         })
 
     def start(self) -> None:
@@ -70,12 +119,14 @@ class MedRemindApp:
         p.bgcolor = th.BG
         p.padding = 0
         p.spacing = 0
-        self.c.audit.log("app_aberto")
-        if not self.c.onboarded:
+        self.device.audit.log("app_aberto")
+        if not self.device.onboarded:
             self.go("onboarding", replace=True)
-        elif not self.c.consent_given:
+        elif not self.device.consent_given:
             self.go("consent", replace=True)
-        elif self.c.security.has_pin:
+        elif self.session and not self.session.logged_in and not self.device.settings.get("mode"):
+            self.go("account", replace=True, first_run=True)
+        elif self.device.security.has_pin:
             self.go("lock", replace=True)
         else:
             self.unlock()
@@ -83,13 +134,14 @@ class MedRemindApp:
     def unlock(self) -> None:
         self.unlocked = True
         # MEDREMIND_START_ROUTE abre direto numa tela (útil em desenvolvimento e capturas).
-        start = os.environ.get("MEDREMIND_START_ROUTE", "home")
+        default = "patients" if self.cloud and self.session.is_professional and self.session.follows_others else "home"
+        start = os.environ.get("MEDREMIND_START_ROUTE", default)
         self.go(start if start in self.routes else "home", replace=True, reset=True)
         if self._reminder_task is None:
             self._reminder_task = self.page.run_task(self._reminder_loop)
 
     def lock(self) -> None:
-        if self.c.security.has_pin:
+        if self.device.security.has_pin:
             self.unlocked = False
             self.go("lock", replace=True, reset=True)
 
@@ -193,6 +245,9 @@ class MedRemindApp:
 
         def run(fn, msg):
             def handler(e):
+                if not self.guard_write():
+                    self.page.pop_dialog()
+                    return
                 fn()
                 self.page.pop_dialog()
                 self.toast(msg)
@@ -228,14 +283,63 @@ class MedRemindApp:
 
     # ---------------------------------------------------------------- lembretes
     async def _reminder_loop(self) -> None:
+        """Laço de fundo: lembretes (30 s), sincronização (30 s ou logo após mudanças) e notificações."""
+        loop = asyncio.get_running_loop()
+        next_reminder = next_notify = 0.0
+        self._sync_due = 0.0
         while True:
+            now = loop.time()
             try:
-                if self.unlocked:
+                own = not self.cloud or self.patient.role == "owner"  # lembretes só dos próprios remédios
+                if self.unlocked and own and now >= next_reminder:
+                    next_reminder = now + REMINDER_INTERVAL_S
                     for r in self.c.reminders.poll():
                         self._show_reminder(r.dose, r.repeat)
+                if self.unlocked and self.cloud and not self._syncing:
+                    pending = await asyncio.to_thread(self.session.pending)
+                    if pending and self._sync_due > now + 3:
+                        self._sync_due = now + 3  # mudança local: sobe em poucos segundos
+                    if now >= self._sync_due:
+                        self._sync_due = now + SYNC_INTERVAL_S
+                        await self._run_sync()
+                    if now >= next_notify:
+                        next_notify = now + NOTIFY_POLL_S
+                        await self._poll_notifications()
             except Exception:
-                log.exception("Falha no ciclo de lembretes")
-            await asyncio.sleep(REMINDER_INTERVAL_S)
+                log.exception("Falha no laço de fundo")
+            await asyncio.sleep(TICK_S)
+
+    async def _run_sync(self, manual: bool = False):
+        self._syncing = True
+        try:
+            result = await asyncio.to_thread(self.session.sync)
+        finally:
+            self._syncing = False
+        self.last_sync = result
+        if result.ok and result.rejected:
+            self.toast(f"{len(result.rejected)} alteração(ões) recusada(s) pelo servidor e desfeita(s).")
+        if manual:
+            self.toast("Sincronizado" if result.ok else result.error)
+        if (result.ok and result.pulled and self.route in LIVE_ROUTES) or manual:
+            self.refresh()
+        return result
+
+    async def _poll_notifications(self) -> None:
+        try:
+            data = await asyncio.to_thread(self.session.api.notifications, True)
+        except Exception:
+            return
+        if data["unread"] != self.unread:
+            new = data["unread"] > self.unread
+            self.unread = data["unread"]
+            if new and data["items"]:
+                self.toast(data["items"][0]["title"], "Ver", lambda e: self.go("notifications"))
+            if self.route in ("home", "profile"):
+                self.refresh()
+
+    def sync_now(self, *_):
+        if self.cloud:
+            self.page.run_task(self._run_sync, True)
 
     def _show_reminder(self, dose: PlannedDose, repeat: bool) -> None:
         med = dose.medication

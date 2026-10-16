@@ -70,7 +70,22 @@ MIGRATIONS: list[str] = [
         created_at TEXT NOT NULL
     );
     """,
+    # 2 — sincronização: identificador global, carimbo de tempo, exclusão lógica e "sujo"
+    "".join(
+        f"""
+    ALTER TABLE {t} ADD COLUMN uuid TEXT;
+    ALTER TABLE {t} ADD COLUMN updated_at TEXT;
+    ALTER TABLE {t} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE {t} ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1;
+    UPDATE {t} SET uuid = lower(hex(randomblob(16))) WHERE uuid IS NULL;
+    UPDATE {t} SET updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now') WHERE updated_at IS NULL;
+    CREATE UNIQUE INDEX idx_{t}_uuid ON {t}(uuid);
+    """
+        for t in ("medications", "dose_logs", "water_logs", "contacts")
+    ),
 ]
+
+SYNC_TABLES = ("medications", "dose_logs", "water_logs", "contacts")
 
 
 class Database:

@@ -138,6 +138,8 @@ def stock_view(app):
     profile = c.settings.profile()
 
     def refill(med):
+        if not app.guard_write():
+            return
         qty = field("Unidades compradas", str(int(med.stock_total) if med.stock_total else 30),
                     keyboard_type=ft.KeyboardType.NUMBER, autofocus=True)
         err = T("", 13, 700, th.DANGER, visible=False)
@@ -215,10 +217,14 @@ def hydration_view(app):
     day = c.hydration.today()
 
     def add(kind):
+        if not app.guard_write():
+            return
         c.hydration.add_preset(kind)
         app.refresh()
 
     def custom(e):
+        if not app.guard_write():
+            return
         amount = field("Quantidade (ml)", "300", keyboard_type=ft.KeyboardType.NUMBER, autofocus=True)
 
         def ok(ev):
@@ -235,6 +241,8 @@ def hydration_view(app):
                     ft.TextButton(content=T("Adicionar", 14, 800, th.PRIMARY), on_click=ok)])
 
     def undo(e):
+        if not app.guard_write():
+            return
         if c.hydration.undo_last():
             app.toast("Último registro removido")
         app.refresh()

@@ -26,7 +26,7 @@ def onboarding_view(app, i: int = 0):
     last = i == len(SLIDES) - 1
 
     def finish(e=None):
-        app.c.settings.set("onboarded", True)
+        app.device.settings.set("onboarded", True)
         app.go("consent", replace=True)
 
     dots = ft.Row([ft.Container(width=28 if n == i else 8, height=8, border_radius=8,
@@ -64,8 +64,8 @@ def consent_view(app):
         button.update()
 
     def accept(e):
-        app.c.give_consent(analytics=bool(analytics.value))
-        app.go("pin_setup", replace=True, first_run=True)
+        app.device.give_consent(analytics=bool(analytics.value))
+        app.go("account", replace=True, first_run=True)
 
     accepted.on_change = toggle
     button.on_click = accept
@@ -147,7 +147,7 @@ def lock_view(app):
     message = T("Digite seu PIN para entrar", 15, 500, th.INK_2, text_align=ft.TextAlign.CENTER)
 
     def done(pin: str):
-        result = app.c.security.verify(pin)
+        result = app.device.security.verify(pin)
         if result.ok:
             app.unlock()
             return
@@ -157,7 +157,7 @@ def lock_view(app):
         pad.reset()
 
     # O teclado usa o tamanho do PIN cadastrado (4 a 6 dígitos).
-    stored = app.c.settings.get("pin_length", 4)
+    stored = app.device.settings.get("pin_length", 4)
     length = stored if isinstance(stored, int) else 4
     pad = _PinPad(length, done)
     return ft.Container(ft.Column([
@@ -186,7 +186,7 @@ def pin_setup_view(app, first_run: bool = False, step: int = 1, first: str = "")
     def done(pin: str):
         if step == 1:
             try:
-                app.c.security.check_strength(pin)
+                app.device.security.check_strength(pin)
             except ValueError as exc:
                 message.value, message.color = str(exc), th.DANGER
                 message.update()
@@ -199,8 +199,8 @@ def pin_setup_view(app, first_run: bool = False, step: int = 1, first: str = "")
             message.update()
             app.go("pin_setup", replace=True, first_run=first_run, step=1)
             return
-        app.c.security.set_pin(pin)
-        app.c.settings.set("pin_length", len(pin))
+        app.device.security.set_pin(pin)
+        app.device.settings.set("pin_length", len(pin))
         app.toast("PIN definido. O app pedirá o PIN ao abrir.")
         if first_run:
             app.unlock()

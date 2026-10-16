@@ -107,6 +107,8 @@ def meds_view(app, filter: str = "all", query: str = ""):
             ], spacing=8))
         if m.frequency == Frequency.AS_NEEDED and not m.paused:
             def take_now(e, m=m):
+                if not app.guard_write():
+                    return
                 c.schedule.take_as_needed(m.id)
                 app.toast(f"Dose de {m.display_name} registrada")
                 app.refresh()
@@ -286,6 +288,8 @@ class MedicationForm:
         return int(value) if integer else value
 
     def save(self, e=None):
+        if not self.app.guard_write():
+            return
         m = self.m
         try:
             m.name = self.name.value or ""
